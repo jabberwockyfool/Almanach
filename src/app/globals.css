@@ -1,0 +1,151 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-line: var(--line);
+  --color-raised: var(--raised);
+  --color-accent: var(--accent);
+  --color-on-accent: var(--on-accent);
+  --color-danger: var(--danger);
+  --color-star: var(--star);
+  --color-star-empty: var(--star-empty);
+  --color-like: var(--like);
+  --font-sans: var(--font-urbanist), system-ui, sans-serif;
+}
+
+/* Sombre par défaut (une appli de médias se regarde souvent le soir), clair si le système le demande. */
+:root {
+  color-scheme: dark;
+  --bg: #111214;
+  --fg: #ececee;
+  --muted: #a1a1aa;
+  --faint: #6b6b74;
+  --line: #26272b;
+  --raised: #1a1b1e;
+  --accent: #e8c26a;
+  --on-accent: #1a1405;
+  --danger: #f07a6a;
+  --k-film: #3987e5;
+  --k-serie: #d95926;
+  --k-jeu: #199e70;
+  --k-anime: #c98500;
+  --k-manga: #d55181;
+  --k-ln: #008300;
+  --k-roman: #9085e9;
+  /* Étoiles de note, rose façon Backloggd. */
+  --star: #ef4b8b;
+  --star-empty: #3a3b41;
+  /* Cœur « aimé », bleu lavande façon Backloggd. */
+  --like: #8f9cff;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --bg: #fafaf9;
+    --fg: #18181b;
+    --muted: #57575f;
+    --faint: #8f8f97;
+    --line: #e4e4e7;
+    --raised: #ffffff;
+    --accent: #9a6b00;
+    --on-accent: #ffffff;
+    --danger: #b42318;
+    --k-film: #2a78d6;
+    --k-serie: #eb6834;
+    --k-jeu: #1baf7a;
+    --k-anime: #eda100;
+    --k-manga: #e87ba4;
+    --k-ln: #008300;
+    --k-roman: #6250d6;
+    --star: #d63374;
+    --star-empty: #d6d6dc;
+    --like: #5b67d8;
+  }
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-feature-settings: "tnum";
+  -webkit-tap-highlight-color: transparent;
+}
+
+input,
+select,
+textarea {
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.65rem;
+  color: var(--fg);
+  min-width: 0;
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input[type="file"] {
+  padding: 0.35rem;
+}
+
+label > span {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-bottom: 0.25rem;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 999px;
+  padding: 0.45rem 1rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+  background: var(--accent);
+  color: var(--on-accent);
+  white-space: nowrap;
+}
+
+.btn-quiet {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 999px;
+  padding: 0.45rem 1rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.btn:disabled,
+.btn-quiet:disabled {
+  opacity: 0.5;
+}
+
+.link {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--faint);
+}
+
+.link:hover {
+  text-decoration-color: currentColor;
+}
+
+/* Barre d'onglets mobile : laisse la place au-dessus de la barre de geste. */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}

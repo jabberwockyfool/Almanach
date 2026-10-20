@@ -1,0 +1,29 @@
+{
+  "name": "almanach",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "backloggd": "node --env-file-if-exists=.env.local scripts/backloggd.mjs"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.18.0",
+    "html-to-image": "^1.11.13",
+    "next": "16.4.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "playwright-core": "^1.56.0",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}

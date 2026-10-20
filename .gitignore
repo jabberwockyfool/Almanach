@@ -1,0 +1,22 @@
+# Dépendances et builds
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# Données locales : base SQLite, profil du navigateur du compagnon Backloggd, tests
+data/
+.backloggd-profile/
+scratch-test/
+
+# Secrets (garder .env.example)
+.env
+.env*.local
+*.env
+
+# Outils (Vercel, agents)
+.vercel
+.agents/
+.claude/
+skills-lock.json

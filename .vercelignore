@@ -1,0 +1,6 @@
+.env*
+!.env.example
+data/
+.backloggd-profile/
+scratch-test/
+*.env
