@@ -64,6 +64,10 @@ const MEDIA_TABLE = (name: string) => `CREATE TABLE IF NOT EXISTS ${name} (
     vndb_id TEXT,
     -- Relation à l'œuvre parente choisie à la main (« Remake », « Adaptation »…), NULL = déduite.
     parent_relation TEXT,
+    -- Infos de la colonne et tags saisis à la main (JSON), à la place de ceux des sources.
+    info_override TEXT,
+    -- Bannière choisie à la main (adresse ou image envoyée), à la place de celle des sources.
+    banner TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`;
@@ -207,6 +211,8 @@ const V2_COLUMNS: [table: string, column: string, definition: string][] = [
   ["media", "private", "INTEGER NOT NULL DEFAULT 0"],
   ["media", "vndb_id", "TEXT"],
   ["media", "parent_relation", "TEXT"],
+  ["media", "info_override", "TEXT"],
+  ["media", "banner", "TEXT NOT NULL DEFAULT ''"],
   ["event", "hidden", "INTEGER NOT NULL DEFAULT 0"],
 ];
 
@@ -393,6 +399,8 @@ export type Media = {
   private: number;
   vndb_id: string | null;
   parent_relation: string | null;
+  info_override: string | null;
+  banner: string;
   created_at: string;
   updated_at: string;
 };
@@ -434,7 +442,7 @@ export type MediaInput = Partial<
   Omit<
     Media,
     | "id" | "user_id" | "created_at" | "updated_at" | "anilist_dirty" | "relations_at" | "source" | "aliases_at" | "cover_grid"
-    | "mal_id" | "mal_at" | "fav_rank" | "parent_override" | "private" | "vndb_id" | "parent_relation"
+    | "mal_id" | "mal_at" | "fav_rank" | "parent_override" | "private" | "vndb_id" | "parent_relation" | "info_override" | "banner"
   >
 > & { kind: Kind; title: string };
 

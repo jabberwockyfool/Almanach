@@ -65,7 +65,11 @@ export default async function Library({ searchParams }: PageProps<"/bibliotheque
   ));
   // Rangement calculé sur toute la bibliothèque : une adaptation ne quitte la grille que si son original y est
   // affiché, et l'original montre ses adaptations même quand un filtre les exclut (onglet Light novels…).
-  const family = await groupAdaptations(await withCovers(await all<Media>(`SELECT * FROM media WHERE user_id = ?${editable ? "" : " AND private = 0"}`, [uid])));
+  // La grille n'a pas besoin des bannières ni des infos saisies à la main (parfois lourdes) : pas envoyées au navigateur.
+  for (const r of rows) Object.assign(r, { banner: "", info_override: null });
+  const familyRows = await withCovers(await all<Media>(`SELECT * FROM media WHERE user_id = ?${editable ? "" : " AND private = 0"}`, [uid]));
+  for (const r of familyRows) Object.assign(r, { banner: "", info_override: null });
+  const family = await groupAdaptations(familyRows);
   const shown = new Set(rows.map((m) => m.id));
   const visible = rows.filter((m) => !family.rootOf[m.id] || !shown.has(family.rootOf[m.id]));
   const children: Record<number, Media[]> = {};

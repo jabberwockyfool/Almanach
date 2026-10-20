@@ -20,6 +20,8 @@ import { MangadexLinker } from "./mangadex-linker";
 import { CoverEditor } from "./cover-editor";
 import { StatusButton } from "./status-button";
 import { ParentPicker } from "./parent-picker";
+import { InfoEditor } from "./info-editor";
+import { BannerEditor } from "./banner-editor";
 import { Clamp, LimitedGrid, TagList, ThemeList, type ThemeRow } from "./parts";
 import { withCovers } from "@/lib/prefs";
 
@@ -283,7 +285,15 @@ export default async function MediaPage({ params }: PageProps<"/media/[id]">) {
     ...userThemes.map((t) => ({ key: `u${t.id}`, id: t.id, label: t.type === "IN" ? "Insert" : t.type, type: t.type, title: t.title, artists: "", episodes: "", video: "", youtube: youtubeId(t.url) ?? "", spoiler: false })),
   ];
   const isFav = m.fav_rank != null;
-  const banner = info.banner;
+  // Colonne d'infos et tags : saisis à la main (« Modifier la fiche ») ou ceux des sources.
+  const override = m.info_override ? (JSON.parse(m.info_override) as { rows: { label: string; value: string }[]; tags: { name: string; rank: number; spoiler: boolean }[] }) : null;
+  const companyRows = [...new Set(info.companies.map((c) => c.role))]
+    .sort((a, b) => ROLE_ORDER.indexOf(a) - ROLE_ORDER.indexOf(b))
+    .map((role) => ({ label: role, value: [...new Set(info.companies.filter((c) => c.role === role).map((c) => c.name))].join(", ") }));
+  const sourceRows = [...info.facts, ...companyRows, ...(info.genres.length ? [{ label: "Genres", value: info.genres.join(", ") }] : [])];
+  const shownTags = override ? override.tags : info.tags.slice(0, 30);
+  // Bannière : celle choisie à la main, sinon celle des sources.
+  const banner = m.banner || info.banner;
   // Bouton de statut : le suivi de sa fiche, ou de quoi ajouter celle d'un autre compte à sa bibliothèque.
   const entry = {
     id: m.id, kind: m.kind, title: m.title, subtitle: m.subtitle, year: m.year, cover: m.cover, status: m.status, progress: m.progress,
@@ -372,7 +382,18 @@ export default async function MediaPage({ params }: PageProps<"/media/[id]">) {
       <div className="mx-auto mt-8 grid max-w-6xl gap-10 px-4 sm:px-6 md:grid-cols-[13rem_minmax(0,1fr)]">
         {/* Colonne d'infos, comme celle d'AniList. */}
         <aside className="order-2 space-y-6 md:order-1">
-          {(info.facts.length > 0 || info.companies.length > 0 || info.genres.length > 0) && (
+          {override ? (
+            override.rows.length > 0 && (
+              <dl className="space-y-3 rounded-md bg-raised p-4">
+                {override.rows.map((f, i) => (
+                  <div key={i}>
+                    <dt className="text-sm font-medium">{f.label}</dt>
+                    <dd className="text-sm whitespace-pre-line text-muted">{f.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            )
+          ) : (info.facts.length > 0 || info.companies.length > 0 || info.genres.length > 0) && (
             <dl className="space-y-3 rounded-md bg-raised p-4">
               {info.facts.map((f) => (
                 <div key={f.label}>
@@ -452,10 +473,10 @@ export default async function MediaPage({ params }: PageProps<"/media/[id]">) {
             </div>
           )}
 
-          {info.tags.length > 0 && (
+          {shownTags.length > 0 && (
             <div>
               <H2>Tags</H2>
-              <TagList tags={info.tags.slice(0, 30)} />
+              <TagList tags={shownTags} />
             </div>
           )}
           {info.keywords.length > 0 && (
@@ -773,6 +794,17 @@ export default async function MediaPage({ params }: PageProps<"/media/[id]">) {
                     <label className="col-span-2"><span>Notes</span><textarea name="notes" rows={4} defaultValue={m.notes} className="w-full" /></label>
                   </div>
                 </ActionForm>
+                <div className="mt-10 max-w-xl">
+                  <BannerEditor mediaId={m.id} banner={banner} custom={Boolean(m.banner)} />
+                </div>
+                <div className="mt-10 max-w-xl">
+                  <InfoEditor
+                    mediaId={m.id}
+                    rows={override?.rows ?? sourceRows}
+                    tags={override?.tags ?? info.tags.slice(0, 30)}
+                    overridden={Boolean(override)}
+                  />
+                </div>
                 <div className="mt-8">
                   <ActionButton quiet action={removeMedia.bind(null, m.id)} confirm={`Supprimer « ${m.title} » et son historique ?`}>
                     Supprimer de la bibliothèque

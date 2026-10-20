@@ -522,6 +522,41 @@ export async function setRelation(mediaId: number, relation: string | null): Pro
   }
 }
 
+// Bannière de la fiche : adresse d'image ou image envoyée (réduite dans le navigateur) ; "" revient à celle des sources.
+export async function setBanner(mediaId: number, banner: string): Promise<Feedback> {
+  try {
+    await own(mediaId);
+    banner = banner.trim();
+    const ok = banner === "" || /^https?:\/\//i.test(banner) || /^data:image\/(jpeg|png|webp);base64,/.test(banner);
+    if (!ok) return { ok: false, text: "Adresse d’image invalide" };
+    if (banner.length > 1_500_000) return { ok: false, text: "Image trop lourde" };
+    await run("UPDATE media SET banner = ? WHERE id = ?", [banner, mediaId]);
+    return done(banner ? "Bannière changée" : "Bannière des sources rétablie");
+  } catch (err) {
+    return failed(err);
+  }
+}
+
+// Infos de la colonne et tags saisis à la main ; null revient à ceux des sources.
+export type InfoOverride = { rows: { label: string; value: string }[]; tags: { name: string; rank: number; spoiler: boolean }[] };
+
+export async function saveInfo(mediaId: number, data: InfoOverride | null): Promise<Feedback> {
+  try {
+    await own(mediaId);
+    const clean = data && {
+      rows: data.rows.filter((r) => r.label?.trim() && r.value?.trim()).slice(0, 60).map((r) => ({ label: r.label.trim().slice(0, 60), value: r.value.trim().slice(0, 500) })),
+      tags: data.tags
+        .filter((t) => t.name?.trim())
+        .slice(0, 60)
+        .map((t) => ({ name: t.name.trim().slice(0, 60), rank: Math.min(100, Math.max(0, Math.round(Number(t.rank) || 0))), spoiler: Boolean(t.spoiler) })),
+    };
+    await run("UPDATE media SET info_override = ? WHERE id = ?", [clean ? JSON.stringify(clean) : null, mediaId]);
+    return done(clean ? "Infos enregistrées" : "Infos des sources rétablies");
+  } catch (err) {
+    return failed(err);
+  }
+}
+
 // Fiche privée (comme sur AniList) : cachée des autres comptes, et ses activités retirées de leur fil.
 export async function setPrivate(mediaId: number, value: boolean): Promise<Feedback> {
   try {
