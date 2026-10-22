@@ -68,6 +68,10 @@ const MEDIA_TABLE = (name: string) => `CREATE TABLE IF NOT EXISTS ${name} (
     info_override TEXT,
     -- Bannière choisie à la main (adresse ou image envoyée), à la place de celle des sources.
     banner TEXT NOT NULL DEFAULT '',
+    -- Où et quand se passe l'œuvre (listes séparées par des virgules) : filtres et stats.
+    setting_country TEXT NOT NULL DEFAULT '',
+    setting_place TEXT NOT NULL DEFAULT '',
+    setting_era TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`;
@@ -79,6 +83,13 @@ const MEDIA_INDEXES = [
   `CREATE UNIQUE INDEX IF NOT EXISTS media_tvmaze ON media (user_id, tvmaze_id) WHERE tvmaze_id IS NOT NULL`,
   `CREATE UNIQUE INDEX IF NOT EXISTS media_isbn ON media (user_id, isbn) WHERE isbn IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS media_user ON media (user_id, status, updated_at)`,
+];
+
+// Une même œuvre chez tous les membres (page d'œuvre, partage des pays / lieux / époques). Créés après l'ajout des
+// colonnes v2 (vndb_id).
+const WORK_INDEXES = [
+  ...["anilist_id", "steam_id", "tmdb_id", "tvmaze_id", "isbn", "backloggd_slug", "vndb_id"].map((c) => `CREATE INDEX IF NOT EXISTS media_work_${c} ON media (${c}) WHERE ${c} IS NOT NULL`),
+  `CREATE INDEX IF NOT EXISTS media_work_title ON media (lower(title))`,
 ];
 
 const EVENT_TABLE = (name: string) => `CREATE TABLE IF NOT EXISTS ${name} (
@@ -128,6 +139,7 @@ const SCHEMA = [
   )`,
   MEDIA_TABLE("media"),
   ...MEDIA_INDEXES,
+  ...WORK_INDEXES,
   // Une ligne par média terminé (un revisionnage en ajoute une autre) : c'est ce que lit le calendrier.
   `CREATE TABLE IF NOT EXISTS log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -213,6 +225,9 @@ const V2_COLUMNS: [table: string, column: string, definition: string][] = [
   ["media", "parent_relation", "TEXT"],
   ["media", "info_override", "TEXT"],
   ["media", "banner", "TEXT NOT NULL DEFAULT ''"],
+  ["media", "setting_country", "TEXT NOT NULL DEFAULT ''"],
+  ["media", "setting_place", "TEXT NOT NULL DEFAULT ''"],
+  ["media", "setting_era", "TEXT NOT NULL DEFAULT ''"],
   ["event", "hidden", "INTEGER NOT NULL DEFAULT 0"],
 ];
 
@@ -349,6 +364,58 @@ export async function batch(stmts: Stmt[]) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Pays, lieux et époques de l'action : ils décrivent l'œuvre, pas le suivi de chacun. Une fiche vide reprend les
+// valeurs d'une fiche de la même œuvre (autre compte, non privée) ; une valeur déjà saisie n'est jamais écrasée.
+//   { uid }  : les fiches d'un compte ;  { like } : toutes les fiches de cette œuvre ;  {} : toutes.
+
+// Lecture économe (le quota de Turso compte chaque ligne lue) : une œuvre passe par les index ci-dessous ; un compte
+// lit une fois les fiches qui ont des valeurs, puis les siennes. Seules les fiches complétées sont réécrites.
+const WORK_KEYS = ["anilist_id", "steam_id", "tmdb_id", "tvmaze_id", "isbn", "backloggd_slug", "vndb_id"] as const;
+const SETTING_COLS = ["setting_country", "setting_place", "setting_era"] as const;
+type WorkRow = Pick<Media, "id" | "user_id" | "kind" | "private" | "title" | "updated_at" | (typeof SETTING_COLS)[number] | (typeof WORK_KEYS)[number]>;
+const WORK_ROW = `id, user_id, kind, private, title, updated_at, ${SETTING_COLS.join(", ")}, ${WORK_KEYS.join(", ")}`;
+
+function workKeys(r: Pick<Media, "kind" | "title" | (typeof WORK_KEYS)[number]>): string[] {
+  const keys = WORK_KEYS.filter((k) => r[k] != null && r[k] !== "" && !(k === "vndb_id" && r[k] === "-")).map((k) => `${r.kind}:${k}:${r[k]}`);
+  return [...keys, `${r.kind}:title:${r.title.toLowerCase()}`];
+}
+
+export async function adoptSettings(scope: { uid?: number; like?: Pick<Media, "kind" | "title" | (typeof WORK_KEYS)[number]> }): Promise<number> {
+  let donors: WorkRow[];
+  let targets: WorkRow[];
+  if (scope.like) {
+    const l = scope.like;
+    const terms = ["lower(title) = lower(?)"];
+    const args: InValue[] = [l.title];
+    for (const k of WORK_KEYS) if (l[k] != null && l[k] !== "" && !(k === "vndb_id" && l[k] === "-")) (terms.push(`${k} = ?`), args.push(l[k]));
+    const rows = (await all<WorkRow>(`SELECT ${WORK_ROW} FROM media WHERE ${terms.join(" OR ")}`, args)).filter((r) => r.kind === l.kind);
+    donors = rows;
+    targets = rows.filter((r) => scope.uid == null || r.user_id === scope.uid);
+  } else {
+    donors = await all<WorkRow>(`SELECT ${WORK_ROW} FROM media WHERE private = 0 AND (${SETTING_COLS.map((c) => `${c} <> ''`).join(" OR ")})`);
+    targets = await all<WorkRow>(
+      `SELECT ${WORK_ROW} FROM media WHERE (${SETTING_COLS.map((c) => `${c} = ''`).join(" OR ")})${scope.uid != null ? " AND user_id = ?" : ""}`,
+      scope.uid != null ? [scope.uid] : [],
+    );
+  }
+  // Pour chaque clé d'œuvre, les fiches publiques qui ont des valeurs, la plus récente d'abord.
+  const byKey = new Map<string, WorkRow[]>();
+  for (const d of donors.filter((d) => !d.private).sort((a, b) => b.updated_at.localeCompare(a.updated_at)))
+    for (const k of workKeys(d)) byKey.set(k, [...(byKey.get(k) ?? []), d]);
+  const stmts: Stmt[] = [];
+  for (const t of targets) {
+    const near = workKeys(t).flatMap((k) => byKey.get(k) ?? []).filter((d) => d.id !== t.id).sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+    for (const col of SETTING_COLS) {
+      if (t[col]) continue;
+      const value = near.find((d) => d[col])?.[col];
+      if (value) stmts.push({ sql: `UPDATE media SET ${col} = ? WHERE id = ? AND ${col} = ''`, args: [value, t.id] });
+    }
+  }
+  if (stmts.length) await batch(stmts);
+  return stmts.length;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Modèle
 
 export type User = {
@@ -401,6 +468,9 @@ export type Media = {
   parent_relation: string | null;
   info_override: string | null;
   banner: string;
+  setting_country: string;
+  setting_place: string;
+  setting_era: string;
   created_at: string;
   updated_at: string;
 };
@@ -442,13 +512,14 @@ export type MediaInput = Partial<
   Omit<
     Media,
     | "id" | "user_id" | "created_at" | "updated_at" | "anilist_dirty" | "relations_at" | "source" | "aliases_at" | "cover_grid"
-    | "mal_id" | "mal_at" | "fav_rank" | "parent_override" | "private" | "vndb_id" | "parent_relation" | "info_override" | "banner"
+    | "mal_id" | "mal_at" | "fav_rank" | "parent_override" | "private" | "parent_relation" | "info_override" | "banner" | "setting_country" | "setting_place" | "setting_era"
   >
 > & { kind: Kind; title: string };
 
 const MEDIA_COLUMNS = [
   "kind", "title", "subtitle", "year", "cover", "status", "progress", "total", "rating", "started_on", "notes", "review", "liked",
   "anilist_id", "tmdb_id", "tvmaze_id", "steam_id", "letterboxd_slug", "backloggd_slug", "mangadex_id", "isbn", "author", "format",
+  "vndb_id",
 ] as const;
 
 // Retrouve une fiche du compte par l'un de ses identifiants externes, puis par titre + année pour films et jeux
@@ -462,6 +533,7 @@ export async function findMedia(uid: number, m: MediaInput): Promise<Media | und
     ["tmdb_id", m.kind === "film" ? m.tmdb_id : undefined],
     ["steam_id", m.steam_id],
     ["isbn", m.isbn],
+    ["vndb_id", m.kind === "jeu" ? m.vndb_id : undefined],
   ];
   for (const [col, val] of keys) {
     if (val == null || val === "") continue;
