@@ -1,5 +1,5 @@
 import "server-only";
-import { all, batch, bulkUpsert, get, getSetting, run, setSetting, type BulkItem, type Media, type Stmt } from "@/lib/db";
+import { adoptSettings, all, batch, bulkUpsert, get, getSetting, run, setSetting, type BulkItem, type Media, type Stmt } from "@/lib/db";
 import { FAV_MAX, normTitle, type Status } from "@/lib/kinds";
 import { eventsFromImport } from "@/lib/events";
 import { importAnilistActivity } from "@/lib/activity";
@@ -60,6 +60,7 @@ export async function syncAniList(uid: number): Promise<SyncReport> {
   await eventsFromImport(uid, startedAt).catch(() => {});
   await importAnilistActivity(uid, 3).catch(() => {});
   await syncMalCovers(uid, 10000).catch(() => {});
+  await adoptSettings({ uid }).catch(() => {}); // pays / lieux / époques déjà saisis par les autres membres
   return { created, logs, message: `${entries.length} entrées lues sur AniList (${user})` };
 }
 
@@ -296,6 +297,7 @@ export async function importFilms(uid: number, watches: FilmWatch[]): Promise<Sy
     }));
   const report = await bulkUpsert(uid, items);
   await eventsFromImport(uid, startedAt);
+  await adoptSettings({ uid }).catch(() => {}); // pays / lieux / époques déjà saisis par les autres membres
   return report;
 }
 
@@ -363,6 +365,7 @@ export async function importBackloggd(uid: number, entries: BackloggdEntry[]): P
   const report = await bulkUpsert(uid, items);
   await eventsFromImport(uid, startedAt);
   await setSetting(uid, "backloggd_synced_at", new Date().toISOString());
+  await adoptSettings({ uid }).catch(() => {}); // pays / lieux / époques déjà saisis par les autres membres
   return report;
 }
 
@@ -427,6 +430,7 @@ export async function importBackloggdLists(uid: number, entries: BackloggdListEn
     stmts.push(...(await appendFavorites(uid, favs.map((f) => f.slug).filter((s) => !already.has(s)), "backloggd_slug")));
   }
   await batch(stmts);
+  await adoptSettings({ uid }).catch(() => {}); // pays / lieux / époques déjà saisis par les autres membres
   return report;
 }
 
