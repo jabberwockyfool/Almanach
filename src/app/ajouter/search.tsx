@@ -14,7 +14,7 @@ const SOURCE: Record<Kind, string> = {
   ln: "AniList",
   serie: "TVmaze",
   film: "TMDB",
-  jeu: "Steam",
+  jeu: "IGDB et VNDB",
   roman: "Open Library (titre, auteur ou ISBN)",
 };
 
