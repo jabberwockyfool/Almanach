@@ -168,6 +168,12 @@ export function isRelation(v: unknown): v is (typeof RELATIONS)[number] {
   return typeof v === "string" && (RELATIONS as readonly string[]).includes(v);
 }
 
+// Listes « Japon, Corée du Sud » : valeurs nettoyées, sans doublon, séparées par « , ».
+export function splitList(s: string | null | undefined): string[] {
+  return [...new Set((s ?? "").split(/[,;\n]/).map((x) => x.trim()).filter(Boolean))];
+}
+export const joinList = (s: string | null | undefined) => splitList(s).join(", ");
+
 // Favoris du profil : une seule liste, tous types confondus ; le premier porte la couronne.
 export const FAV_MAX = 10;
 
