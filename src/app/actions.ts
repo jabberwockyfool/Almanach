@@ -4,17 +4,18 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import {
-  addActivity, addLog, all, batch, deleteMedia, findMedia, get, getMedia, run, setSetting, upsertMedia, type Media, type MediaInput,
+  addActivity, addLog, adoptSettings, all, batch, deleteMedia, findMedia, get, getMedia, run, setSetting, upsertMedia, type Media, type MediaInput, type Stmt,
 } from "@/lib/db";
 import { SESSION_COOKIE } from "@/lib/auth";
-import { requireAdmin, requireUid } from "@/lib/user";
-import { FAV_MAX, isKind, isRelation, isStatus, today, youtubeId, type Kind, type Status } from "@/lib/kinds";
+import { getUser, requireAdmin, requireUid } from "@/lib/user";
+import { FAV_MAX, isKind, isRelation, isStatus, joinList, splitList, today, youtubeId, type Kind, type Status } from "@/lib/kinds";
 import { coverCandidates, searchCatalog, tvmazeEpisodeCount, type SearchResult } from "@/lib/catalog";
 import { viewerName } from "@/lib/anilist";
 import { parseDiaryCsv } from "@/lib/letterboxd";
 import { mangadexIdFromUrl, searchMangadex } from "@/lib/mangadex";
 import { addEvents, recordFinish, recordProgress, recordRating, recordStatus } from "@/lib/events";
 import { sgdbCovers } from "@/lib/info";
+import { warmStats } from "@/lib/insights";
 import { syncSteam } from "@/lib/steam";
 import { syncMalCovers } from "@/lib/mal";
 import {
@@ -169,6 +170,7 @@ export async function addEntry(result: SearchResult | null, form: FormData): Pro
         relation, form.get("private") ? 1 : 0, m.id,
       ],
     );
+    await adoptSettings({ like: m }).catch(() => {});
     const after = (await own(m.id))!;
 
     if (st === "termine") {
@@ -200,7 +202,7 @@ export async function updateMedia(id: number, form: FormData): Promise<Feedback>
     const rating = num(form.get("rating"));
     await run(
       `UPDATE media SET title = ?, subtitle = ?, year = ?, cover = ?, status = ?, progress = ?, total = ?, rating = ?,
-       started_on = ?, notes = ?, author = ?, updated_at = datetime('now') WHERE id = ?`,
+       started_on = ?, notes = ?, author = ?, setting_country = ?, setting_place = ?, setting_era = ?, updated_at = datetime('now') WHERE id = ?`,
       [
         String(form.get("title") ?? before.title).trim() || before.title,
         String(form.get("subtitle") ?? "").trim(),
@@ -213,10 +215,14 @@ export async function updateMedia(id: number, form: FormData): Promise<Feedback>
         isoDate(form.get("started_on")),
         String(form.get("notes") ?? ""),
         String(form.get("author") ?? before.author ?? "").trim(),
+        form.has("setting_country") ? joinList(String(form.get("setting_country"))) : before.setting_country,
+        form.has("setting_place") ? joinList(String(form.get("setting_place"))) : before.setting_place,
+        form.has("setting_era") ? joinList(String(form.get("setting_era"))) : before.setting_era,
         id,
       ],
     );
     const after = await own(id);
+    if (after.setting_country || after.setting_place || after.setting_era) await adoptSettings({ like: after }).catch(() => {});
     if (before.status !== after.status && after.status !== "termine") await recordStatus(after, before.status, after.status);
     // Passé à « Terminé » à la main : la fin est datée d'aujourd'hui (modifiable ensuite dans l'historique).
     if (before.status !== "termine" && after.status === "termine") {
@@ -538,20 +544,115 @@ export async function setBanner(mediaId: number, banner: string): Promise<Feedba
 }
 
 // Infos de la colonne et tags saisis à la main ; null revient à ceux des sources.
-export type InfoOverride = { rows: { label: string; value: string }[]; tags: { name: string; rank: number; spoiler: boolean }[] };
+// Chaque section est facultative : seules celles modifiées sont envoyées, et elles s'ajoutent à celles déjà
+// enregistrées ; les autres continuent de suivre les sources.
+export type InfoOverride = {
+  rows?: { label: string; value: string }[];
+  tags?: { name: string; rank: number; spoiler: boolean }[];
+  description?: string;
+  characters?: { name: string; role: string; image: string; va?: { name: string; image: string } }[];
+};
+
+const isImage = (s: string) => !s || /^https?:\/\//i.test(s);
 
 export async function saveInfo(mediaId: number, data: InfoOverride | null): Promise<Feedback> {
   try {
-    await own(mediaId);
-    const clean = data && {
-      rows: data.rows.filter((r) => r.label?.trim() && r.value?.trim()).slice(0, 60).map((r) => ({ label: r.label.trim().slice(0, 60), value: r.value.trim().slice(0, 500) })),
-      tags: data.tags
+    const m = await own(mediaId);
+    if (!data) {
+      await run("UPDATE media SET info_override = NULL WHERE id = ?", [mediaId]);
+      return done("Infos des sources rétablies");
+    }
+    const next: InfoOverride = m.info_override ? JSON.parse(m.info_override) : {};
+    if (data.rows) {
+      next.rows = data.rows
+        .filter((r) => r.label?.trim() && r.value?.trim())
+        .slice(0, 60)
+        .map((r) => ({ label: r.label.trim().slice(0, 60), value: r.value.trim().slice(0, 500) }));
+    }
+    if (data.tags) {
+      next.tags = data.tags
         .filter((t) => t.name?.trim())
         .slice(0, 60)
-        .map((t) => ({ name: t.name.trim().slice(0, 60), rank: Math.min(100, Math.max(0, Math.round(Number(t.rank) || 0))), spoiler: Boolean(t.spoiler) })),
-    };
-    await run("UPDATE media SET info_override = ? WHERE id = ?", [clean ? JSON.stringify(clean) : null, mediaId]);
-    return done(clean ? "Infos enregistrées" : "Infos des sources rétablies");
+        .map((t) => ({ name: t.name.trim().slice(0, 60), rank: Math.min(100, Math.max(0, Math.round(Number(t.rank) || 0))), spoiler: Boolean(t.spoiler) }));
+    }
+    if (data.description !== undefined) next.description = String(data.description).trim().slice(0, 8000);
+    if (data.characters) {
+      next.characters = data.characters
+        .filter((c) => c.name?.trim())
+        .slice(0, 40)
+        .map((c) => ({
+          name: c.name.trim().slice(0, 80),
+          role: (c.role ?? "").trim().slice(0, 40),
+          image: isImage(c.image?.trim() ?? "") ? (c.image ?? "").trim() : "",
+          va: c.va?.name?.trim() ? { name: c.va.name.trim().slice(0, 80), image: isImage(c.va.image?.trim() ?? "") ? (c.va.image ?? "").trim() : "" } : undefined,
+        }));
+    }
+    await run("UPDATE media SET info_override = ? WHERE id = ?", [JSON.stringify(next), mediaId]);
+    return done("Infos enregistrées");
+  } catch (err) {
+    return failed(err);
+  }
+}
+
+// Bouton « Mettre à jour » des stats : récupère tout de suite ce qui manque (par gros lots), pour soi ou un membre.
+export async function refreshStats(ownerId: number, kind: Kind | "tout"): Promise<Feedback> {
+  try {
+    await requireUid();
+    const owner = await getUser(ownerId);
+    if (!owner || owner.status === "pending") return { ok: false, text: "Compte introuvable" };
+    await warmStats(owner.id, kind === "tout" || isKind(kind) ? kind : "tout", true);
+    return done("Stats mises à jour");
+  } catch (err) {
+    return failed(err);
+  }
+}
+
+// Renomme (to) ou supprime (to = null) un pays, un lieu ou une époque dans toutes les fiches du compte ; un nom déjà
+// utilisé fusionne les deux valeurs.
+export async function editSettingValue(facet: "pays" | "lieux" | "epoques", from: string, to: string | null): Promise<Feedback> {
+  try {
+    const uid = await requireUid();
+    const column = ({ pays: "setting_country", lieux: "setting_place", epoques: "setting_era" } as const)[facet];
+    if (!column || !from.trim()) return { ok: false, text: "Valeur inconnue" };
+    const next = to?.replace(/[,;]/g, " ").trim() || null;
+    const rows = await all<{ id: number; value: string }>(`SELECT id, ${column} AS value FROM media WHERE user_id = ? AND ${column} <> ''`, [uid]);
+    const stmts: Stmt[] = [];
+    for (const r of rows) {
+      const list = splitList(r.value);
+      if (!list.some((v) => v.toLowerCase() === from.trim().toLowerCase())) continue;
+      const updated = joinList(list.map((v) => (v.toLowerCase() === from.trim().toLowerCase() ? (next ?? "") : v)).join(", "));
+      stmts.push({ sql: `UPDATE media SET ${column} = ? WHERE id = ? AND user_id = ?`, args: [updated, r.id, uid] });
+    }
+    if (!stmts.length) return { ok: false, text: "Aucune fiche ne l’utilise" };
+    await batch(stmts);
+    return done(next ? `Renommé dans ${stmts.length} fiche${stmts.length > 1 ? "s" : ""}` : `Retiré de ${stmts.length} fiche${stmts.length > 1 ? "s" : ""}`);
+  } catch (err) {
+    return failed(err);
+  }
+}
+
+// Change la catégorie d'une valeur dans toutes les fiches du compte : un lieu devient un pays, ou l'inverse.
+export async function moveSettingValue(from: "pays" | "lieux", value: string): Promise<Feedback> {
+  try {
+    const uid = await requireUid();
+    const src = from === "pays" ? "setting_country" : "setting_place";
+    const dst = from === "pays" ? "setting_place" : "setting_country";
+    const key = value.trim().toLowerCase();
+    if (!key) return { ok: false, text: "Valeur inconnue" };
+    const rows = await all<{ id: number; src: string; dst: string }>(`SELECT id, ${src} AS src, ${dst} AS dst FROM media WHERE user_id = ? AND ${src} <> ''`, [uid]);
+    const stmts: Stmt[] = [];
+    for (const r of rows) {
+      const list = splitList(r.src);
+      const hit = list.find((v) => v.toLowerCase() === key);
+      if (!hit) continue;
+      stmts.push({
+        sql: `UPDATE media SET ${src} = ?, ${dst} = ? WHERE id = ? AND user_id = ?`,
+        args: [joinList(list.filter((v) => v !== hit).join(", ")), joinList(`${r.dst}, ${hit}`), r.id, uid],
+      });
+    }
+    if (!stmts.length) return { ok: false, text: "Aucune fiche ne l’utilise" };
+    await batch(stmts);
+    return done(`Passé en ${from === "pays" ? "lieu" : "pays"} dans ${stmts.length} fiche${stmts.length > 1 ? "s" : ""}`);
   } catch (err) {
     return failed(err);
   }
