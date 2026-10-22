@@ -93,7 +93,7 @@ function isoToFr(s: string | null | undefined): string {
   return m ? frDate({ year: Number(m[1]), month: m[2] ? Number(m[2]) : null, day: m[3] ? Number(m[3]) : null }) : (s ?? "");
 }
 
-const GENRE_FR: Record<string, string> = {
+export const GENRE_FR: Record<string, string> = {
   Action: "Action", Adventure: "Aventure", Comedy: "Comédie", Drama: "Drame", Ecchi: "Ecchi", Fantasy: "Fantasy", Horror: "Horreur",
   "Mahou Shoujo": "Magical girl", Mecha: "Mecha", Music: "Musique", Mystery: "Mystère", Psychological: "Psychologique",
   Romance: "Romance", "Sci-Fi": "Science-fiction", "Slice of Life": "Tranche de vie", Sports: "Sport", Supernatural: "Surnaturel",
@@ -435,7 +435,7 @@ function fromSteam(info: Info, s: SteamApp) {
 // IGDB (bannières « artworks » des jeux, sociétés) : facultatif, demande une appli Twitch
 // (TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET sur dev.twitch.tv).
 
-async function igdbToken(): Promise<string | null> {
+export async function igdbToken(): Promise<string | null> {
   const id = process.env.TWITCH_CLIENT_ID;
   const secret = process.env.TWITCH_CLIENT_SECRET;
   if (!id || !secret) return null;
