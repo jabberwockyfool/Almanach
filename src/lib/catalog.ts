@@ -2,9 +2,11 @@ import "server-only";
 import type { MediaInput } from "@/lib/db";
 import type { Kind } from "@/lib/kinds";
 import { relatedCovers, searchAniList } from "@/lib/anilist";
+import { igdbToken } from "@/lib/info";
+import { normTitle } from "@/lib/kinds";
 
 // Recherche de fiches à ajouter, par type :
-// anime / manga / light novel → AniList ; série → TVmaze ; film → TMDB (si TMDB_TOKEN) ; jeu → Steam ;
+// anime / manga / light novel → AniList ; série → TVmaze ; film → TMDB (si TMDB_TOKEN) ; jeu → IGDB et VNDB (Steam sans IGDB) ;
 // roman → Open Library (titre, auteur ou ISBN ; Google Books en appoint si GOOGLE_BOOKS_KEY).
 // Toutes sans clé, sauf TMDB.
 
@@ -25,7 +27,7 @@ export async function searchCatalog(kind: Kind, q: string): Promise<SearchResult
     case "film":
       return searchTmdb(q);
     case "jeu":
-      return searchSteam(q);
+      return searchGames(q);
     case "roman":
       return searchBooks(q);
   }
@@ -173,6 +175,86 @@ async function searchTmdb(q: string): Promise<SearchResult[]> {
     cover: r.poster_path ? `https://image.tmdb.org/t/p/w500${r.poster_path}` : "",
     tmdb_id: r.id,
     source: "TMDB",
+  }));
+}
+
+// Jeux : IGDB (comme Backloggd, dont les slugs sont ceux d'IGDB) et VNDB pour les visual novels ; un jeu connu des
+// deux n'apparaît qu'une fois, avec son id VNDB. Sans IGDB (pas de clé Twitch), Steam.
+async function searchGames(q: string): Promise<SearchResult[]> {
+  const [igdb, vndb] = await Promise.all([searchIgdb(q).catch(() => null), searchVndb(q).catch(() => [] as SearchResult[])]);
+  if (igdb === null && !vndb.length) return searchSteam(q);
+  const out = [...(igdb ?? [])];
+  for (const v of vndb) {
+    const same = out.find((g) => normTitle(g.title) === normTitle(v.title));
+    if (same) same.vndb_id ??= v.vndb_id;
+    else out.push(v);
+  }
+  return out.slice(0, 18);
+}
+
+type IgdbHit = {
+  name: string;
+  slug: string;
+  first_release_date?: number;
+  cover?: { image_id: string };
+  game_type?: number;
+  external_games?: { uid?: string; external_game_source?: number }[];
+  ports?: { external_games?: { uid?: string; external_game_source?: number }[] }[];
+  involved_companies?: { developer: boolean; company: { name: string } }[];
+};
+
+async function searchIgdb(q: string): Promise<SearchResult[] | null> {
+  const token = process.env.TWITCH_CLIENT_ID ? await igdbToken() : null;
+  if (!token) return null;
+  const res = await fetch("https://api.igdb.com/v4/games", {
+    method: "POST",
+    headers: { "Client-ID": process.env.TWITCH_CLIENT_ID!, Authorization: `Bearer ${token}` },
+    // Jeux principaux, extensions autonomes, remakes, remasters et versions étendues (pas les DLC ni les éditions).
+    body: `search "${q.replace(/"/g, "")}"; fields name, slug, first_release_date, cover.image_id, game_type, external_games.uid, external_games.external_game_source, ports.external_games.uid, ports.external_games.external_game_source, involved_companies.developer, involved_companies.company.name; where game_type = (0,4,8,9,10) & version_parent = null; limit 15;`,
+    cache: "no-store",
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) throw new Error(`IGDB : HTTP ${res.status}`);
+  const TYPE: Record<number, string> = { 4: "Extension autonome", 8: "Remake", 9: "Remaster", 10: "Version étendue" };
+  return ((await res.json()) as IgdbHit[]).map((g) => {
+    // Id Steam du jeu, sinon de son portage PC (Persona 4 Golden : la version Steam est un portage).
+    const steam = [...(g.external_games ?? []), ...(g.ports ?? []).flatMap((x) => x.external_games ?? [])].find(
+      (e) => e.external_game_source === 1 && e.uid && /^\d+$/.test(e.uid),
+    );
+    const devs = [...new Set((g.involved_companies ?? []).filter((c) => c.developer).map((c) => c.company.name))];
+    return {
+      kind: "jeu" as const,
+      title: g.name,
+      subtitle: [TYPE[g.game_type ?? 0], devs.slice(0, 2).join(", ")].filter(Boolean).join(" · "),
+      year: g.first_release_date ? new Date(g.first_release_date * 1000).getUTCFullYear() : null,
+      cover: g.cover ? `https://images.igdb.com/igdb/image/upload/t_cover_big/${g.cover.image_id}.jpg` : "",
+      steam_id: steam ? Number(steam.uid) : undefined,
+      // Backloggd reprend les slugs d'IGDB : la fiche se retrouve à l'import et à l'envoi des fins.
+      backloggd_slug: g.slug,
+      source: "IGDB",
+    };
+  });
+}
+
+async function searchVndb(q: string): Promise<SearchResult[]> {
+  const res = await fetch("https://api.vndb.org/kana/vn", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "User-Agent": UA },
+    body: JSON.stringify({ filters: ["search", "=", q], fields: "id, title, released, image.url, image.sexual, developers.name", results: 10, sort: "searchrank" }),
+    cache: "no-store",
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) throw new Error(`VNDB : HTTP ${res.status}`);
+  const data = (await res.json()) as { results: { id: string; title: string; released: string | null; image: { url: string; sexual: number } | null; developers: { name: string }[] }[] };
+  return data.results.map((v) => ({
+    kind: "jeu" as const,
+    title: v.title,
+    subtitle: ["Visual novel", v.developers.slice(0, 2).map((d) => d.name).join(", ")].filter(Boolean).join(" · "),
+    year: v.released && /^\d{4}/.test(v.released) ? Number(v.released.slice(0, 4)) : null,
+    // Pas de jaquette explicite dans les résultats.
+    cover: v.image && v.image.sexual < 1 ? v.image.url : "",
+    vndb_id: v.id,
+    source: "VNDB",
   }));
 }
 
