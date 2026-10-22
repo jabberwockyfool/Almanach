@@ -50,6 +50,7 @@ export default async function Profile({ params }: PageProps<"/u/[id]">) {
           <h1 className="text-3xl font-bold tracking-tight">{pseudo}</h1>
           <p className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
             <Link href={mine ? "/bibliotheque" : `/bibliotheque?u=${user.id}`} className="link">Bibliothèque</Link>
+            <Link href={mine ? "/stats" : `/stats?u=${user.id}`} className="link">Stats</Link>
             {mine && <Link href={`/wrapped/${year}`} className="link">Récap {year}</Link>}
             {mine && <Link href="/reglages" className="link">Réglages</Link>}
           </p>
