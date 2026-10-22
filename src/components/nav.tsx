@@ -15,6 +15,7 @@ export function Nav({ user }: { user: NavUser }) {
     { href: "/", label: "Accueil" },
     { href: "/bibliotheque", label: "Bibliothèque" },
     { href: "/annee", label: "Année" },
+    { href: "/stats", label: "Stats" },
     { href: "/ajouter", label: "Ajouter" },
   ];
   const profile = `/u/${user.id}`;
@@ -47,7 +48,7 @@ export function Nav({ user }: { user: NavUser }) {
       </header>
       <nav className="safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-line bg-bg/95 backdrop-blur sm:hidden">
         <div className="grid grid-cols-5 text-center text-[0.72rem]">
-          {[...items, { href: profile, label: "Profil" }].map((i) => (
+          {[...items.filter((i) => i.href !== "/stats"), { href: profile, label: "Profil" }].map((i) => (
             <Link key={i.href} href={i.href} className={`py-3.5 ${active(i.href) ? "font-bold text-accent" : "text-muted"}`}>
               {i.label}
             </Link>
