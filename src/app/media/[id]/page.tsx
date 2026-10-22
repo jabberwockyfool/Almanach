@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { notFound, redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 import { connection } from "next/server";
-import { all, get, type Link as MediaLink, type Log, type Media } from "@/lib/db";
-import { FORMAT_LABEL, KIND_COLOR, KIND_LABEL, KIND_UNIT, RELATION_INVERSE, STATUSES, STATUS_LABEL, normTitle, youtubeId } from "@/lib/kinds";
+import { adoptSettings, all, get, type Link as MediaLink, type Log, type Media } from "@/lib/db";
+import { FORMAT_LABEL, KIND_COLOR, KIND_LABEL, KIND_UNIT, RELATION_INVERSE, STATUSES, STATUS_LABEL, normTitle, splitList, youtubeId } from "@/lib/kinds";
 import { groupAdaptations } from "@/lib/groups";
 import { emptyInfo, flagOf, getInfo, type Company, type SeriesGame } from "@/lib/info";
 import { getUser, requireUser } from "@/lib/user";
@@ -21,6 +21,8 @@ import { CoverEditor } from "./cover-editor";
 import { StatusButton } from "./status-button";
 import { ParentPicker } from "./parent-picker";
 import { InfoEditor } from "./info-editor";
+import { ListField } from "@/components/list-field";
+import type { InfoOverride } from "@/app/actions";
 import { BannerEditor } from "./banner-editor";
 import { Clamp, LimitedGrid, TagList, ThemeList, type ThemeRow } from "./parts";
 import { withCovers } from "@/lib/prefs";
@@ -164,30 +166,37 @@ export default async function MediaPage({ params }: PageProps<"/media/[id]">) {
   await connection();
   const me = await requireUser();
   const id = Number((await params).id);
-  const m = await get<Media>("SELECT * FROM media WHERE id = ?", [id]);
-  if (!m) notFound();
+  const requested = await get<Media>("SELECT * FROM media WHERE id = ?", [id]);
+  if (!requested) notFound();
+  // Une seule page par œuvre : l'adresse de la fiche de n'importe quel membre affiche la même page. Si on a l'œuvre,
+  // c'est son propre suivi (modifiable) ; sinon celui du membre, en lecture, et chacun est dans « Le groupe ».
+  // Ajouter l'œuvre depuis la fiche d'un autre ne change donc pas de page.
+  let m: Media = requested;
+  if (requested.user_id !== me.id) {
+    const mine = await get<Media>(
+      `SELECT * FROM media WHERE user_id = ? AND kind = ? AND (
+         (anilist_id IS NOT NULL AND anilist_id = ?) OR (steam_id IS NOT NULL AND steam_id = ?) OR (tmdb_id IS NOT NULL AND tmdb_id = ?)
+         OR (tvmaze_id IS NOT NULL AND tvmaze_id = ?) OR (isbn IS NOT NULL AND isbn = ?) OR (backloggd_slug IS NOT NULL AND backloggd_slug = ?)
+         OR lower(title) = lower(?)) ORDER BY id LIMIT 1`,
+      [me.id, requested.kind, requested.anilist_id, requested.steam_id, requested.tmdb_id, requested.tvmaze_id, requested.isbn, requested.backloggd_slug, requested.title],
+    );
+    if (mine) m = mine;
+  }
   const owner = m.user_id === me.id ? me : await getUser(m.user_id);
   if (!owner || owner.status === "pending") notFound();
   // Fiche d'un autre compte : lecture seule, et introuvable si elle est privée.
   const editable = owner.id === me.id;
   if (!editable && m.private) notFound();
-  // Une seule page par œuvre : si on l'a aussi, on va sur sa propre fiche (celle des autres y est dans « Le groupe »).
-  if (!editable) {
-    const mine = await get<{ id: number }>(
-      `SELECT id FROM media WHERE user_id = ? AND kind = ? AND (
-         (anilist_id IS NOT NULL AND anilist_id = ?) OR (steam_id IS NOT NULL AND steam_id = ?) OR (tmdb_id IS NOT NULL AND tmdb_id = ?)
-         OR (tvmaze_id IS NOT NULL AND tvmaze_id = ?) OR (isbn IS NOT NULL AND isbn = ?) OR (backloggd_slug IS NOT NULL AND backloggd_slug = ?)
-         OR lower(title) = lower(?)) LIMIT 1`,
-      [me.id, m.kind, m.anilist_id, m.steam_id, m.tmdb_id, m.tvmaze_id, m.isbn, m.backloggd_slug, m.title],
-    );
-    if (mine) redirect(`/media/${mine.id}`);
+  // Pays, lieux, époques vides : repris d'une fiche de la même œuvre chez un autre membre.
+  if (!m.setting_country || !m.setting_place || !m.setting_era) {
+    if (await adoptSettings({ like: m }).catch(() => 0)) m = (await get<Media>("SELECT * FROM media WHERE id = ?", [m.id])) ?? m;
   }
 
   const [logs, links, userAliases, userThemes, library] = await Promise.all([
-    all<Log>("SELECT * FROM log WHERE media_id = ? ORDER BY finished_on IS NULL, finished_on DESC, id DESC", [id]),
-    editable ? all<MediaLink>("SELECT * FROM link WHERE media_id = ? ORDER BY position", [id]) : Promise.resolve([] as MediaLink[]),
-    all<{ title: string }>("SELECT title FROM title_alias WHERE media_id = ? ORDER BY title", [id]),
-    all<{ id: number; type: string; title: string; url: string }>("SELECT * FROM theme WHERE media_id = ? ORDER BY type, id", [id]),
+    all<Log>("SELECT * FROM log WHERE media_id = ? ORDER BY finished_on IS NULL, finished_on DESC, id DESC", [m.id]),
+    editable ? all<MediaLink>("SELECT * FROM link WHERE media_id = ? ORDER BY position", [m.id]) : Promise.resolve([] as MediaLink[]),
+    all<{ title: string }>("SELECT title FROM title_alias WHERE media_id = ? ORDER BY title", [m.id]),
+    all<{ id: number; type: string; title: string; url: string }>("SELECT * FROM theme WHERE media_id = ? ORDER BY type, id", [m.id]),
     all<Media>(`SELECT * FROM media WHERE user_id = ?${editable ? "" : " AND private = 0"}`, [owner.id]).then(withCovers),
   ]);
   const unit = KIND_UNIT[m.kind];
@@ -285,13 +294,29 @@ export default async function MediaPage({ params }: PageProps<"/media/[id]">) {
     ...userThemes.map((t) => ({ key: `u${t.id}`, id: t.id, label: t.type === "IN" ? "Insert" : t.type, type: t.type, title: t.title, artists: "", episodes: "", video: "", youtube: youtubeId(t.url) ?? "", spoiler: false })),
   ];
   const isFav = m.fav_rank != null;
+  // Valeurs déjà utilisées dans la bibliothèque (suggestions des champs pays / lieux / époques).
+  const settingValues = { country: [] as string[], place: [] as string[], era: [] as string[] };
+  if (editable) {
+    const sets = { country: new Set<string>(), place: new Set<string>(), era: new Set<string>() };
+    for (const x of library) {
+      for (const v of splitList(x.setting_country)) sets.country.add(v);
+      for (const v of splitList(x.setting_place)) sets.place.add(v);
+      for (const v of splitList(x.setting_era)) sets.era.add(v);
+    }
+    settingValues.country = [...sets.country].sort();
+    settingValues.place = [...sets.place].sort();
+    settingValues.era = [...sets.era].sort();
+  }
   // Colonne d'infos et tags : saisis à la main (« Modifier la fiche ») ou ceux des sources.
-  const override = m.info_override ? (JSON.parse(m.info_override) as { rows: { label: string; value: string }[]; tags: { name: string; rank: number; spoiler: boolean }[] }) : null;
+  const override = m.info_override ? (JSON.parse(m.info_override) as InfoOverride) : null;
+  // Résumé et personnages saisis à la main, sinon ceux des sources.
+  const description = override?.description ?? info.description;
+  const characters = override?.characters ?? info.characters;
   const companyRows = [...new Set(info.companies.map((c) => c.role))]
     .sort((a, b) => ROLE_ORDER.indexOf(a) - ROLE_ORDER.indexOf(b))
     .map((role) => ({ label: role, value: [...new Set(info.companies.filter((c) => c.role === role).map((c) => c.name))].join(", ") }));
   const sourceRows = [...info.facts, ...companyRows, ...(info.genres.length ? [{ label: "Genres", value: info.genres.join(", ") }] : [])];
-  const shownTags = override ? override.tags : info.tags.slice(0, 30);
+  const shownTags = override?.tags ?? info.tags.slice(0, 30);
   // Bannière : celle choisie à la main, sinon celle des sources.
   const banner = m.banner || info.banner;
   // Bouton de statut : le suivi de sa fiche, ou de quoi ajouter celle d'un autre compte à sa bibliothèque.
@@ -368,7 +393,7 @@ export default async function MediaPage({ params }: PageProps<"/media/[id]">) {
                 )}
               </p>
             )}
-            {info.description && <div className="hidden pt-2 sm:block"><Clamp text={info.description} /></div>}
+            {description && <div className="hidden pt-2 sm:block"><Clamp text={description} /></div>}
             <p className="flex flex-wrap gap-x-3 gap-y-1 pt-1 text-sm text-muted">
               {[...externalLinks(m), ...info.links].map(([label, href]) => (
                 <a key={label} href={href} target="_blank" rel="noreferrer" className="link">{label}</a>
@@ -376,13 +401,13 @@ export default async function MediaPage({ params }: PageProps<"/media/[id]">) {
             </p>
           </div>
         </div>
-        {info.description && <div className="px-4 pb-5 sm:hidden"><Clamp text={info.description} /></div>}
+        {description && <div className="px-4 pb-5 sm:hidden"><Clamp text={description} /></div>}
       </header>
 
       <div className="mx-auto mt-8 grid max-w-6xl gap-10 px-4 sm:px-6 md:grid-cols-[13rem_minmax(0,1fr)]">
         {/* Colonne d'infos, comme celle d'AniList. */}
         <aside className="order-2 space-y-6 md:order-1">
-          {override ? (
+          {override?.rows ? (
             override.rows.length > 0 && (
               <dl className="space-y-3 rounded-md bg-raised p-4">
                 {override.rows.map((f, i) => (
@@ -408,6 +433,32 @@ export default async function MediaPage({ params }: PageProps<"/media/[id]">) {
                   <dd className="text-sm text-muted">{info.genres.join(", ")}</dd>
                 </div>
               )}
+            </dl>
+          )}
+
+          {(m.setting_country || m.setting_place || m.setting_era) && (
+            <dl className="space-y-3 rounded-md bg-raised p-4">
+              {(
+                [
+                  ["Pays", "pays", m.setting_country],
+                  ["Lieu", "lieu", m.setting_place],
+                  ["Époque", "epoque", m.setting_era],
+                ] as const
+              )
+                .filter(([, , v]) => v)
+                .map(([label, param, v]) => (
+                  <div key={param}>
+                    <dt className="text-sm font-medium">{label}</dt>
+                    <dd className="text-sm text-muted">
+                      {splitList(v).map((x, i) => (
+                        <span key={x}>
+                          {i > 0 && ", "}
+                          <Link href={`/bibliotheque?${editable ? "" : `u=${owner.id}&`}${param}=${encodeURIComponent(x)}`} className="link">{x}</Link>
+                        </span>
+                      ))}
+                    </dd>
+                  </div>
+                ))}
             </dl>
           )}
 
@@ -540,14 +591,14 @@ export default async function MediaPage({ params }: PageProps<"/media/[id]">) {
             </section>
           )}
 
-          {info.characters.length > 0 && (
+          {characters.length > 0 && (
             <section>
               <H2>
                 {m.kind === "film" || m.kind === "serie" ? "Distribution" : "Personnages"}
-                {info.charactersFrom && <span className="ml-2 font-normal tracking-normal normal-case">d’après {info.charactersFrom}</span>}
+                {info.charactersFrom && !override?.characters && <span className="ml-2 font-normal tracking-normal normal-case">d’après {info.charactersFrom}</span>}
               </H2>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {info.characters.map((c, i) => (
+                {characters.map((c, i) => (
                   <div key={i} className="flex h-20 overflow-hidden rounded-md bg-raised text-xs">
                     {c.image && (
                       // eslint-disable-next-line @next/next/no-img-element
@@ -791,6 +842,18 @@ export default async function MediaPage({ params }: PageProps<"/media/[id]">) {
                     <label><span>Note /10</span><input name="rating" inputMode="decimal" defaultValue={m.rating ?? ""} className="w-full" /></label>
                     <label><span>Commencé le</span><input type="date" name="started_on" defaultValue={m.started_on ?? ""} className="w-full" /></label>
                     <label className="col-span-2"><span>Couverture (adresse)</span><input name="cover" defaultValue={m.cover} className="w-full" /></label>
+                    <div className="col-span-2">
+                      <span className="mb-1 block text-[0.8rem] text-muted">Pays où ça se passe</span>
+                      <ListField name="setting_country" defaultValue={m.setting_country} placeholder="Japon, France… (Entrée pour ajouter)" suggestions={settingValues.country} />
+                    </div>
+                    <div className="col-span-2">
+                      <span className="mb-1 block text-[0.8rem] text-muted">Villes / lieux</span>
+                      <ListField name="setting_place" defaultValue={m.setting_place} placeholder="Tokyo, Akihabara…" suggestions={settingValues.place} />
+                    </div>
+                    <div className="col-span-2">
+                      <span className="mb-1 block text-[0.8rem] text-muted">Époques (années ou périodes)</span>
+                      <ListField name="setting_era" defaultValue={m.setting_era} placeholder="2010, 1975, Ère Meiji…" suggestions={settingValues.era} />
+                    </div>
                     <label className="col-span-2"><span>Notes</span><textarea name="notes" rows={4} defaultValue={m.notes} className="w-full" /></label>
                   </div>
                 </ActionForm>
@@ -802,6 +865,8 @@ export default async function MediaPage({ params }: PageProps<"/media/[id]">) {
                     mediaId={m.id}
                     rows={override?.rows ?? sourceRows}
                     tags={override?.tags ?? info.tags.slice(0, 30)}
+                    description={description}
+                    characters={characters}
                     overridden={Boolean(override)}
                   />
                 </div>
