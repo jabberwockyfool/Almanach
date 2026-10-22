@@ -40,6 +40,12 @@ export default async function Library({ searchParams }: PageProps<"/bibliotheque
   const type = isKind(sp.type) ? sp.type : null;
   const statut = isStatus(sp.statut) ? sp.statut : null;
   const q = typeof sp.q === "string" ? sp.q.trim() : "";
+  // Où et quand se passe l'œuvre (liens de la fiche et des stats).
+  const place = {
+    pays: typeof sp.pays === "string" ? sp.pays.trim() : "",
+    lieu: typeof sp.lieu === "string" ? sp.lieu.trim() : "",
+    epoque: typeof sp.epoque === "string" ? sp.epoque.trim() : "",
+  };
   // Par défaut : tout, du mieux noté au moins bien noté, à note égale le plus récemment modifié.
   const tri: Sort = isSort(sp.tri) ? sp.tri : "note";
   const puis: ThenSort = isThenSort(sp.puis) ? sp.puis : "recent";
@@ -52,6 +58,9 @@ export default async function Library({ searchParams }: PageProps<"/bibliotheque
   const args: InValue[] = [uid];
   if (type) (where.push("kind = ?"), args.push(type));
   if (statut) (where.push("status = ?"), args.push(statut));
+  for (const [param, column] of [["pays", "setting_country"], ["lieu", "setting_place"], ["epoque", "setting_era"]] as const) {
+    if (place[param]) (where.push(`(', ' || ${column} || ', ') LIKE ?`), args.push(`%, ${place[param]}, %`));
+  }
   // Recherche dans les titres, l'auteur et les autres titres (AniList, VNDB, ajoutés à la main).
   if (q) {
     where.push(`(title LIKE ? OR subtitle LIKE ? OR author LIKE ?
@@ -91,6 +100,9 @@ export default async function Library({ searchParams }: PageProps<"/bibliotheque
       tri: tri !== "note" ? tri : null,
       puis: puis !== "recent" ? puis : null,
       ova: ova ? "1" : null,
+      pays: place.pays || null,
+      lieu: place.lieu || null,
+      epoque: place.epoque || null,
       ...patch,
     };
     for (const [k, v] of Object.entries(next)) if (v) p.set(k, v);
@@ -118,8 +130,26 @@ export default async function Library({ searchParams }: PageProps<"/bibliotheque
         {tri !== "note" && <input type="hidden" name="tri" value={tri} />}
         {puis !== "recent" && <input type="hidden" name="puis" value={puis} />}
         {ova && <input type="hidden" name="ova" value="1" />}
+        {Object.entries(place).map(([k, v]) => v && <input key={k} type="hidden" name={k} value={v} />)}
         <input name="q" defaultValue={q} placeholder="Chercher dans la bibliothèque" className="flex-1" />
       </form>
+      {(place.pays || place.lieu || place.epoque) && (
+        <p className="flex flex-wrap gap-2 text-sm">
+          {(
+            [
+              ["pays", "Pays"],
+              ["lieu", "Lieu"],
+              ["epoque", "Époque"],
+            ] as const
+          )
+            .filter(([k]) => place[k])
+            .map(([k, label]) => (
+              <Link key={k} href={href({ [k]: null })} className="rounded-full bg-fg/10 px-3 py-1 hover:bg-fg/15" title="Retirer ce filtre">
+                {label} : {place[k]} ×
+              </Link>
+            ))}
+        </p>
+      )}
       <p className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
         <Link href={href({ type: null })} className={chip(!type)}>Tout</Link>
         {KINDS.map((k) => (
@@ -127,7 +157,7 @@ export default async function Library({ searchParams }: PageProps<"/bibliotheque
         ))}
       </p>
       <LibraryGrid
-        key={`${owner.id}-${type}-${statut}-${q}-${tri}-${puis}-${ova}`}
+        key={`${owner.id}-${type}-${statut}-${q}-${tri}-${puis}-${ova}-${place.pays}-${place.lieu}-${place.epoque}`}
         items={items}
         statut={statut}
         sort={tri}
